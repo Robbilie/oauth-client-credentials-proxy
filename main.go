@@ -59,6 +59,7 @@ func main() {
 		getEnv("SCOPE", ""),
 		os.Getenv("CERT_PATH"),
 		os.Getenv("KEY_PATH"),
+		os.Getenv("CACERT_PATH"),
 	)
 	if err != nil {
 		loggerInstance.Fatalw("Couldn't initialize server", "err", err)
@@ -75,7 +76,7 @@ func main() {
 	}
 }
 
-func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string) (*server, error) {
+func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string) (*server, error) {
 	u, _ := url.Parse(upstream)
 
 	ctx := context.Background()
@@ -91,19 +92,26 @@ func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId 
 		if err != nil {
 			return nil, err
 		}
-		// Create a CA certificate pool and add cert.pem to it
-		caCert, err := ioutil.ReadFile(certPath)
-		if err != nil {
-			return nil, err
+		var config *tls.Config
+		if len(caCertPath) > 0 {
+			caCert, err := ioutil.ReadFile(certPath)
+			if err != nil {
+				return nil, err
+			}
+			caCertPool := x509.NewCertPool()
+			caCertPool.AppendCertsFromPEM(caCert)
+			config = &tls.Config{
+				RootCAs:      caCertPool,
+				Certificates: []tls.Certificate{cert},
+			}
+		} else {
+			config = &tls.Config{
+				Certificates: []tls.Certificate{cert},
+			}
 		}
-		caCertPool := x509.NewCertPool()
-		caCertPool.AppendCertsFromPEM(caCert)
 		httpClient := &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					RootCAs:      caCertPool,
-					Certificates: []tls.Certificate{cert},
-				},
+				TLSClientConfig: config,
 			},
 		}
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
@@ -139,6 +147,7 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 
 	token, err := s.TokenSource.Token()
 	if err != nil {
+		s.Logger.Errorw("Error getting token", err)
 		res.WriteHeader(500)
 		return
 	}
