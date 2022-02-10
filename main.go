@@ -94,7 +94,7 @@ func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId 
 		}
 		var config *tls.Config
 		if len(caCertPath) > 0 {
-			caCert, err := ioutil.ReadFile(certPath)
+			caCert, err := ioutil.ReadFile(caCertPath)
 			if err != nil {
 				return nil, err
 			}
