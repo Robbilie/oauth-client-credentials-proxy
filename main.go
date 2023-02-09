@@ -17,6 +17,9 @@ import (
 	"time"
 )
 
+const AUTHMODE_CLIENT_CREDENTIALS = "CLIENT_CREDENTIALS"
+const AUTHMODE_ACTOR_TOKEN = "ACTOR_TOKEN"
+
 var (
 	requestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "http_requests_total",
@@ -42,9 +45,14 @@ func init() {
 }
 
 type server struct {
-	Upstream    *url.URL
-	TokenSource oauth2.TokenSource
-	Logger      logger.Logger
+	Upstream     *url.URL
+	TokenSource  oauth2.TokenSource
+	Logger       logger.Logger
+	AuthMode     string
+	SubjectField string
+	HttpContext  context.Context
+	TokenUrl     string
+	Scope        string
 }
 
 func main() {
@@ -60,6 +68,8 @@ func main() {
 		os.Getenv("CERT_PATH"),
 		os.Getenv("KEY_PATH"),
 		os.Getenv("CACERT_PATH"),
+		getEnv("TOKEN_EXCHANGE_AUTH_MODE", AUTHMODE_CLIENT_CREDENTIALS),
+		getEnv("TOKEN_EXCHANGE_SUBJECT_FIELD", "subject"),
 	)
 	if err != nil {
 		loggerInstance.Fatalw("Couldn't initialize server", "err", err)
@@ -76,7 +86,7 @@ func main() {
 	}
 }
 
-func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string) (*server, error) {
+func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string, authMode string, subjectField string) (*server, error) {
 	u, _ := url.Parse(upstream)
 
 	ctx := context.Background()
@@ -118,9 +128,14 @@ func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId 
 	}
 
 	return &server{
-		Upstream:    u,
-		Logger:      logger,
-		TokenSource: conf.TokenSource(ctx),
+		Upstream:     u,
+		Logger:       logger,
+		TokenSource:  conf.TokenSource(ctx),
+		AuthMode:     authMode,
+		SubjectField: subjectField,
+		HttpContext:  ctx,
+		TokenUrl:     tokenUrl,
+		Scope:        scope,
 	}, nil
 }
 
@@ -147,13 +162,49 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 
 	token, err := s.TokenSource.Token()
 	if err != nil {
-		s.Logger.Errorw("Error getting token", err)
+		s.Logger.Errorw("Error getting client credential token", err)
 		res.WriteHeader(500)
 		return
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	if s.AuthMode == AUTHMODE_ACTOR_TOKEN {
+		var subject string
+		switch s.SubjectField {
+		case "subject":
+			subject = req.Header.Get("x-subject")
+		case "requested_subject":
+			subject = req.Header.Get("x-requested_subject")
+		case "subject_token":
+			subject = req.Header.Get("x-subject_token")
+		default:
+			s.Logger.Warnw("SUBJECT_FIELD variable not set to either subject, requested_subject or subject_token")
+			subject = ""
+		}
+		actorTokenConf := &clientcredentials.Config{
+			ClientID:     "",
+			ClientSecret: "",
+			Scopes:       strings.Split(s.Scope, ","),
+			TokenURL:     s.TokenUrl,
+			EndpointParams: url.Values{
+				"grant_type":           {"urn:ietf:params:oauth:grant-type:token-exchange"},
+				"requested_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+				"actor_token_type":     {"urn:ietf:params:oauth:token-type:access_token"},
+				"actor_token":          {token.AccessToken},
+				s.SubjectField:         {subject},
+			},
+		}
+		token, err := actorTokenConf.TokenSource(s.HttpContext).Token()
+		if err != nil {
+			s.Logger.Errorw("Error fetching the subject token", err)
+			res.WriteHeader(500)
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
-	// Note that ServeHttp is non blocking and uses a go routine under the hood
+	} else {
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		// Note that ServeHttp is non blocking and uses a go routine under the hood
+	}
 	proxy.ServeHTTP(res, req)
+
 }
