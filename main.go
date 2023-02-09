@@ -178,6 +178,7 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 				Scopes:       strings.Split(s.Scope, ","),
 				TokenURL:     s.TokenUrl,
 				EndpointParams: url.Values{
+					"grant_type":           {"urn:ietf:params:oauth:grant-type:token-exchange"},
 					"requested_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 					s.SubjectField:         {subject},
 				},
