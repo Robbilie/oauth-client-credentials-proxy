@@ -53,6 +53,8 @@ type server struct {
 	HttpContext  context.Context
 	TokenUrl     string
 	Scope        string
+	ClientID     string
+	ClientSecret string
 }
 
 func main() {
@@ -136,6 +138,8 @@ func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId 
 		HttpContext:  ctx,
 		TokenUrl:     tokenUrl,
 		Scope:        scope,
+		ClientID:     clientId,
+		ClientSecret: clientSecret,
 	}, nil
 }
 
@@ -160,40 +164,50 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 	req.URL.Scheme = s.Upstream.Scheme
 	req.Host = s.Upstream.Host
 
-	token, err := s.TokenSource.Token()
-	if err != nil {
-		s.Logger.Errorw("Error getting client credential token", err)
-		res.WriteHeader(500)
-		return
-	}
+	if req.Header.Get("x-"+s.SubjectField) != "" {
+		subject := req.Header.Get("x-" + s.SubjectField)
 
-	if s.AuthMode == AUTHMODE_ACTOR_TOKEN {
-		var subject string
-		switch s.SubjectField {
-		case "subject":
-			subject = req.Header.Get("x-subject")
-		case "requested_subject":
-			subject = req.Header.Get("x-requested_subject")
-		case "subject_token":
-			subject = req.Header.Get("x-subject_token")
-		default:
-			s.Logger.Warnw("SUBJECT_FIELD variable not set to either subject, requested_subject or subject_token")
-			subject = ""
+		var personalizedTokenConf *clientcredentials.Config
+
+		switch s.AuthMode {
+		case AUTHMODE_CLIENT_CREDENTIALS:
+			// no need to fetch system token first
+			personalizedTokenConf = &clientcredentials.Config{
+				ClientID:     s.ClientID,
+				ClientSecret: s.ClientSecret,
+				Scopes:       strings.Split(s.Scope, ","),
+				TokenURL:     s.TokenUrl,
+				EndpointParams: url.Values{
+					"requested_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+					s.SubjectField:         {subject},
+				},
+			}
+
+		case AUTHMODE_ACTOR_TOKEN:
+			// fetch system token first to perform exchange
+			token, err := s.TokenSource.Token()
+			if err != nil {
+				s.Logger.Errorw("Error getting system token", err)
+				res.WriteHeader(500)
+				return
+			}
+
+			personalizedTokenConf = &clientcredentials.Config{
+				ClientID:     "",
+				ClientSecret: "",
+				Scopes:       strings.Split(s.Scope, ","),
+				TokenURL:     s.TokenUrl,
+				EndpointParams: url.Values{
+					"grant_type":           {"urn:ietf:params:oauth:grant-type:token-exchange"},
+					"requested_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+					"actor_token_type":     {"urn:ietf:params:oauth:token-type:access_token"},
+					"actor_token":          {token.AccessToken},
+					s.SubjectField:         {subject},
+				},
+			}
 		}
-		actorTokenConf := &clientcredentials.Config{
-			ClientID:     "",
-			ClientSecret: "",
-			Scopes:       strings.Split(s.Scope, ","),
-			TokenURL:     s.TokenUrl,
-			EndpointParams: url.Values{
-				"grant_type":           {"urn:ietf:params:oauth:grant-type:token-exchange"},
-				"requested_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
-				"actor_token_type":     {"urn:ietf:params:oauth:token-type:access_token"},
-				"actor_token":          {token.AccessToken},
-				s.SubjectField:         {subject},
-			},
-		}
-		token, err := actorTokenConf.TokenSource(s.HttpContext).Token()
+
+		token, err := personalizedTokenConf.TokenSource(s.HttpContext).Token()
 		if err != nil {
 			s.Logger.Errorw("Error fetching the subject token", err)
 			res.WriteHeader(500)
@@ -202,9 +216,15 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
 	} else {
+		// only fetch system token
+		token, err := s.TokenSource.Token()
+		if err != nil {
+			s.Logger.Errorw("Error getting client credential token", err)
+			res.WriteHeader(500)
+			return
+		}
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-		// Note that ServeHttp is non blocking and uses a go routine under the hood
 	}
+	// Note that ServeHttp is non-blocking and uses a go routine under the hood
 	proxy.ServeHTTP(res, req)
-
 }
