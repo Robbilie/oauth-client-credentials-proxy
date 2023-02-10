@@ -11,3 +11,5 @@ oauth-client-credentials-proxy
 ### CERT_PATH
 ### KEY_PATH
 ### CACERT_PATH optional
+### TOKEN_EXCHANGE_AUTH_MODE CLIENT_CREDENTIALS
+### TOKEN_EXCHANGE_SUBJECT_FIELD subject
