@@ -4,6 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v4/test"
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/robbilie/oauth-client-credentials-proxy/logger"
 	"golang.org/x/oauth2"
@@ -19,6 +23,7 @@ import (
 
 const AUTHMODE_CLIENT_CREDENTIALS = "CLIENT_CREDENTIALS"
 const AUTHMODE_ACTOR_TOKEN = "ACTOR_TOKEN"
+const AUTHMODE_SELF_SIGNED_TOKEN = "SELF_SIGNED_TOKEN"
 
 var (
 	requestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -55,6 +60,8 @@ type server struct {
 	Scope        string
 	ClientID     string
 	ClientSecret string
+	KeyPath      string
+	Audience     string
 }
 
 func main() {
@@ -72,6 +79,7 @@ func main() {
 		os.Getenv("CACERT_PATH"),
 		getEnv("TOKEN_EXCHANGE_AUTH_MODE", AUTHMODE_CLIENT_CREDENTIALS),
 		getEnv("TOKEN_EXCHANGE_SUBJECT_FIELD", "subject"),
+		getEnv("AUDIENCE", ""),
 	)
 	if err != nil {
 		loggerInstance.Fatalw("Couldn't initialize server", "err", err)
@@ -88,7 +96,7 @@ func main() {
 	}
 }
 
-func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string, authMode string, subjectField string) (*server, error) {
+func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string, authMode string, subjectField string, audience string) (*server, error) {
 	u, _ := url.Parse(upstream)
 
 	ctx := context.Background()
@@ -140,6 +148,8 @@ func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId 
 		Scope:        scope,
 		ClientID:     clientId,
 		ClientSecret: clientSecret,
+		KeyPath:      keyPath,
+		Audience:     audience,
 	}, nil
 }
 
@@ -153,6 +163,10 @@ func getEnv(key, fallback string) string {
 func getListenAddress() string {
 	port := getEnv("PORT", "8080")
 	return ":" + port
+}
+
+type TokenResponse struct {
+	AccessToken string `json:"access_token"`
 }
 
 func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
@@ -217,15 +231,85 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
 	} else {
-		// only fetch system token
-		token, err := s.TokenSource.Token()
-		if err != nil {
-			s.Logger.Errorw("Error getting client credential token", err)
-			res.WriteHeader(500)
-			return
+		switch s.AuthMode {
+		case AUTHMODE_SELF_SIGNED_TOKEN:
+			accessToken, err := createJwt(s.KeyPath, s.ClientID, s.Audience)
+			if err != nil {
+				s.Logger.Errorw("Error fetching the subject token", err)
+				res.WriteHeader(500)
+				return
+			}
+			u, err := url.Parse(s.TokenUrl)
+			if err != nil {
+				s.Logger.Errorw("Error fetching the subject token", err)
+				res.WriteHeader(500)
+				return
+			}
+			if req.URL.Path == u.Path {
+				req.Header.Set("Authorization", "Bearer "+accessToken)
+			} else {
+				request, err := http.NewRequest(http.MethodPost, s.TokenUrl+"?grant_type=client_credentials", nil)
+				if err != nil {
+					s.Logger.Errorw("Error getting client credential token", err)
+					res.WriteHeader(500)
+					return
+				}
+				request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				request.Header.Set("Authorization", "Bearer "+accessToken)
+
+				response, err := http.DefaultClient.Do(request)
+				if err != nil {
+					s.Logger.Errorw("Error getting client credential token", err)
+					res.WriteHeader(500)
+					return
+				}
+				defer response.Body.Close()
+				body, err := ioutil.ReadAll(response.Body)
+				var result TokenResponse
+				if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
+					s.Logger.Errorw("Error getting client credential token", err)
+					res.WriteHeader(500)
+					return
+				}
+				req.Header.Set("Authorization", "Bearer "+result.AccessToken)
+			}
+		default:
+			// only fetch system token
+			token, err := s.TokenSource.Token()
+			if err != nil {
+				s.Logger.Errorw("Error getting client credential token", err)
+				res.WriteHeader(500)
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		}
-		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	}
 	// Note that ServeHttp is non-blocking and uses a go routine under the hood
 	proxy.ServeHTTP(res, req)
+}
+
+func createJwt(keyPath string, clientId string, audience string) (string, error) {
+	jwtTestRS256PrivateKey := test.LoadRSAPrivateKeyFromDisk(keyPath)
+
+	// Create the Claims
+	claims := &jwt.RegisteredClaims{
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Second * 60)),
+		Issuer:    clientId,
+		Subject:   clientId,
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		Audience:  []string{audience},
+		ID:        uuid.New().String(),
+	}
+
+	token := &jwt.Token{
+		Header: map[string]interface{}{
+			"typ": "JWT",
+			"alg": jwt.SigningMethodRS256.Alg(),
+			"kid": clientId,
+		},
+		Claims: claims,
+		Method: jwt.SigningMethodRS256,
+	}
+
+	return token.SignedString(jwtTestRS256PrivateKey)
 }
