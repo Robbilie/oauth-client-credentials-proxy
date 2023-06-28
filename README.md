@@ -14,3 +14,4 @@ oauth-client-credentials-proxy
 ### TOKEN_EXCHANGE_AUTH_MODE CLIENT_CREDENTIALS (alt: ACTOR_TOKEN, SELF_SIGNED_TOKEN)
 ### TOKEN_EXCHANGE_SUBJECT_FIELD subject
 ### AUDIENCE
+### GRANT_TYPE client_credentials (alt ie.: PASSWORD)

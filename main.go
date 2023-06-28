@@ -80,6 +80,7 @@ func main() {
 		getEnv("TOKEN_EXCHANGE_AUTH_MODE", AUTHMODE_CLIENT_CREDENTIALS),
 		getEnv("TOKEN_EXCHANGE_SUBJECT_FIELD", "subject"),
 		getEnv("AUDIENCE", ""),
+		getEnv("GRANT_TYPE", "client_credentials"),
 	)
 	if err != nil {
 		loggerInstance.Fatalw("Couldn't initialize server", "err", err)
@@ -96,7 +97,7 @@ func main() {
 	}
 }
 
-func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string, authMode string, subjectField string, audience string) (*server, error) {
+func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string, authMode string, subjectField string, audience string, grantType string) (*server, error) {
 	u, _ := url.Parse(upstream)
 
 	ctx := context.Background()
@@ -105,6 +106,9 @@ func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId 
 		ClientSecret: clientSecret,
 		Scopes:       strings.Split(scope, ","),
 		TokenURL:     tokenUrl,
+		EndpointParams: url.Values{
+			"grant_type": {grantType},
+		},
 	}
 
 	if len(certPath) > 0 && len(keyPath) > 0 {
