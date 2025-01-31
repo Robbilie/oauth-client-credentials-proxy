@@ -15,3 +15,4 @@ oauth-client-credentials-proxy
 ### TOKEN_EXCHANGE_SUBJECT_FIELD subject
 ### AUDIENCE
 ### GRANT_TYPE client_credentials (alt ie.: PASSWORD)
+### INSECURE_SKIP_VERIFY

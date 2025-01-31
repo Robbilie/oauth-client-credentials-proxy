@@ -77,6 +77,7 @@ func main() {
 		os.Getenv("CERT_PATH"),
 		os.Getenv("KEY_PATH"),
 		os.Getenv("CACERT_PATH"),
+		getEnv("INSECURE_SKIP_VERIFY", "false"),
 		getEnv("TOKEN_EXCHANGE_AUTH_MODE", AUTHMODE_CLIENT_CREDENTIALS),
 		getEnv("TOKEN_EXCHANGE_SUBJECT_FIELD", "subject"),
 		getEnv("AUDIENCE", ""),
@@ -97,10 +98,9 @@ func main() {
 	}
 }
 
-func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string, authMode string, subjectField string, audience string, grantType string) (*server, error) {
+func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId string, clientSecret string, scope string, certPath string, keyPath string, caCertPath string, insecureSkipVerify string, authMode string, subjectField string, audience string, grantType string) (*server, error) {
 	u, _ := url.Parse(upstream)
 
-	ctx := context.Background()
 	conf := &clientcredentials.Config{
 		ClientID:     clientId,
 		ClientSecret: clientSecret,
@@ -111,35 +111,40 @@ func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId 
 		},
 	}
 
+	config := &tls.Config{}
+
+	if insecureSkipVerify == "true" {
+		config.InsecureSkipVerify = true
+	}
+
 	if len(certPath) > 0 && len(keyPath) > 0 {
 		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
 			return nil, err
 		}
-		var config *tls.Config
-		if len(caCertPath) > 0 {
-			caCert, err := ioutil.ReadFile(caCertPath)
+		config.Certificates = []tls.Certificate{cert}
+	}
+
+	if len(caCertPath) > 0 {
+		caCertPaths := strings.Split(caCertPath, ",")
+		caCertPool := x509.NewCertPool()
+		for _, path := range caCertPaths {
+			caCert, err := os.ReadFile(path)
 			if err != nil {
 				return nil, err
 			}
-			caCertPool := x509.NewCertPool()
 			caCertPool.AppendCertsFromPEM(caCert)
-			config = &tls.Config{
-				RootCAs:      caCertPool,
-				Certificates: []tls.Certificate{cert},
-			}
-		} else {
-			config = &tls.Config{
-				Certificates: []tls.Certificate{cert},
-			}
 		}
-		httpClient := &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: config,
-			},
-		}
-		ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
+		config.RootCAs = caCertPool
 	}
+
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: config,
+		},
+	}
+
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
 
 	return &server{
 		Upstream:     u,
