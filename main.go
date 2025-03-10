@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -24,6 +25,7 @@ import (
 const AUTHMODE_CLIENT_CREDENTIALS = "CLIENT_CREDENTIALS"
 const AUTHMODE_ACTOR_TOKEN = "ACTOR_TOKEN"
 const AUTHMODE_SELF_SIGNED_TOKEN = "SELF_SIGNED_TOKEN"
+const AUTHMODE_SAS = "SAS"
 
 var (
 	requestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -56,6 +58,7 @@ type server struct {
 	AuthMode     string
 	SubjectField string
 	HttpContext  context.Context
+	HttpClient   *http.Client
 	TokenUrl     string
 	Scope        string
 	ClientID     string
@@ -153,6 +156,7 @@ func newServer(logger logger.Logger, upstream string, tokenUrl string, clientId 
 		AuthMode:     authMode,
 		SubjectField: subjectField,
 		HttpContext:  ctx,
+		HttpClient:   httpClient,
 		TokenUrl:     tokenUrl,
 		Scope:        scope,
 		ClientID:     clientId,
@@ -176,6 +180,15 @@ func getListenAddress() string {
 
 type TokenResponse struct {
 	AccessToken string `json:"access_token"`
+}
+
+type SasTokenRequest struct {
+	ClientID string   `json:"clientId"`
+	Scopes   []string `json:"scopes"`
+}
+
+type SasTokenResponse struct {
+	AccessToken string `json:"accessToken"`
 }
 
 func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
@@ -282,6 +295,32 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 				}
 				req.Header.Set("Authorization", "Bearer "+result.AccessToken)
 			}
+		case AUTHMODE_SAS:
+			values := SasTokenRequest{ClientID: s.ClientID, Scopes: strings.Split(s.Scope, ",")}
+			jsonValue, _ := json.Marshal(values)
+			request, err := http.NewRequest(http.MethodPost, s.TokenUrl, bytes.NewBuffer(jsonValue))
+			if err != nil {
+				s.Logger.Errorw("Error getting sas token", err)
+				res.WriteHeader(500)
+				return
+			}
+			request.Header.Set("Content-Type", "application/json")
+
+			response, err := s.HttpClient.Do(request)
+			if err != nil {
+				s.Logger.Errorw("Error getting sas token", err)
+				res.WriteHeader(500)
+				return
+			}
+			defer response.Body.Close()
+			body, err := ioutil.ReadAll(response.Body)
+			var result SasTokenResponse
+			if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
+				s.Logger.Errorw("Error getting sas token", err)
+				res.WriteHeader(500)
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+result.AccessToken)
 		default:
 			// only fetch system token
 			token, err := s.TokenSource.Token()
