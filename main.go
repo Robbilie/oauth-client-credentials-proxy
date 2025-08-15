@@ -6,13 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"github.com/golang-jwt/jwt/v4"
-	"github.com/golang-jwt/jwt/v4/test"
-	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/robbilie/oauth-client-credentials-proxy/logger"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/clientcredentials"
 	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
@@ -20,6 +13,14 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v4/test"
+	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/robbilie/oauth-client-credentials-proxy/logger"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 const AUTHMODE_CLIENT_CREDENTIALS = "CLIENT_CREDENTIALS"
@@ -287,6 +288,11 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 				}
 				defer response.Body.Close()
 				body, err := ioutil.ReadAll(response.Body)
+				if code := response.StatusCode; code < 200 || code > 299 {
+					s.Logger.Errorw("Error getting client credential token: " + string(body))
+					res.WriteHeader(500)
+					return
+				}
 				var result TokenResponse
 				if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
 					s.Logger.Errorw("Error getting client credential token", err)
@@ -314,6 +320,11 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 			}
 			defer response.Body.Close()
 			body, err := ioutil.ReadAll(response.Body)
+			if code := response.StatusCode; code < 200 || code > 299 {
+				s.Logger.Errorw("Error getting client credential token: " + string(body))
+				res.WriteHeader(500)
+				return
+			}
 			var result SasTokenResponse
 			if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
 				s.Logger.Errorw("Error getting sas token", err)
