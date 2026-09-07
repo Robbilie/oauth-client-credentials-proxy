@@ -201,6 +201,10 @@ func (s *server) handleRequest(res http.ResponseWriter, req *http.Request) {
 	req.URL.Scheme = s.Upstream.Scheme
 	req.Host = s.Upstream.Host
 
+	req.Header.Del("Upgrade")
+    req.Header.Del("HTTP2-Settings")
+    req.Header.Del("Connection")
+
 	if req.Header.Get("x-"+s.SubjectField) != "" {
 		subject := req.Header.Get("x-" + s.SubjectField)
 
